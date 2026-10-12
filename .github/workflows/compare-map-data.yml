@@ -46,9 +46,22 @@ jobs:
           ls -l data
       - name: Compare
         run: |
-          python tools/compare.py data --region "${{ github.event.inputs.region }}" \
-            --points "${{ github.event.inputs.points }}" --server "${{ github.event.inputs.server }}" \
-            --delay "${{ github.event.inputs.delay }}" --report compare-report.json | tee compare-log.txt
+          annotate() {
+            msg=$(tail -c 3500 "$3" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"}{print}')
+            echo "::$1 title=$2::$msg"
+          }
+          if ! python tools/compare.py data --region "${{ github.event.inputs.region }}" \
+              --points "${{ github.event.inputs.points }}" --server "${{ github.event.inputs.server }}" \
+              --delay "${{ github.event.inputs.delay }}" --report compare-report.json 2>&1 | tee compare-log.txt; then
+            annotate error "Compare failed" compare-log.txt
+            exit 1
+          fi
+          sed -n '/=== Archive vs Overpass/,/Overpass requests/p' compare-log.txt > compare-summary.txt
+          annotate notice "Archive vs Overpass" compare-summary.txt
+          # The differences, a few per annotation.
+          sed -n '/Overpass requests/,$p' compare-log.txt | tail -n +2 > compare-diffs.txt
+          split -l 12 compare-diffs.txt diffpart-
+          for f in $(ls diffpart-* 2>/dev/null | head -8); do annotate warning "Differences ($f)" "$f"; done
           {
             echo '```'
             sed -n '/=== Archive vs Overpass/,$p' compare-log.txt

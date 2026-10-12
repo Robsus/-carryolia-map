@@ -202,8 +202,14 @@ def deg(e7):
     return round(e7 / 1e7, 7)
 
 
-def dumps(obj):
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+try:
+    import orjson
+
+    def dumps(obj):
+        return orjson.dumps(obj).decode("utf-8")
+except ImportError:  # slower, same result
+    def dumps(obj):
+        return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
 class Stats:
@@ -268,17 +274,39 @@ def read_relations(path, stats):
     return wanted, needed_ways
 
 
-def read_nodes_and_ways(path, zoom, sink, needed_ways, stats, location_store):
-    """Pass 2: nodes and ways (with node locations); keeps the member geometry relations need."""
+def object_tiles(flat, n):
+    """Tiles of a flat [lat, lon, ...] line. Small objects (most buildings) take a shortcut:
+    every tile of their bounding box (at most 2 x 2); bigger ones go segment by segment."""
+    lats = flat[0::2]
+    lons = flat[1::2]
+    x0, y0 = tile_xy(max(lats), min(lons), n)
+    x1, y1 = tile_xy(min(lats), max(lons), n)
+    tx0, tx1 = clamp(int(x0), n), clamp(int(x1), n)
+    ty0, ty1 = clamp(int(y0), n), clamp(int(y1), n)
+    if tx1 - tx0 <= 1 and ty1 - ty0 <= 1:
+        return [(tx, ty) for tx in range(tx0, tx1 + 1) for ty in range(ty0, ty1 + 1)]
+    tiles, _ = line_tiles(flat, n)
+    return tiles
+
+
+def nodes_and_ways_worker(path, zoom, needed_ways, workers, index, lines_path):
+    """Pass 2, one of [workers] processes: the nodes and ways whose id % workers == index.
+
+    Reads a file whose ways already carry their node coordinates
+    (osmium add-locations-to-ways), so no location index is needed here.
+    Returns the counts, the extent and the geometry of relation member ways it saw."""
     n = 1 << zoom
+    stats = Stats()
+    sink = LineSink(lines_path, zoom, stats)
     member_geometry = {}
     seen = 0
     last_log = time.time()
-    processor = osmium.FileProcessor(path, osmium.osm.NODE | osmium.osm.WAY).with_locations(location_store)
-    for obj in processor:
+    for obj in osmium.FileProcessor(path, osmium.osm.NODE | osmium.osm.WAY):
+        if obj.id % workers != index:
+            continue
         seen += 1
-        if time.time() - last_log > 30:
-            log(f"  {seen:,} objects read, {stats.counts.get('lines', 0):,} tile entries")
+        if index == 0 and time.time() - last_log > 60:
+            log(f"  worker 0: {seen:,} objects, {stats.counts.get('lines', 0):,} tile entries")
             last_log = time.time()
 
         if obj.is_node():
@@ -299,10 +327,11 @@ def read_nodes_and_ways(path, zoom, sink, needed_ways, stats, location_store):
         node_ids = []
         flat = []
         for nd in obj.nodes:
-            if nd.location.valid():
+            loc = nd.location
+            if loc.valid():
                 node_ids.append(nd.ref)
-                flat.append(deg(nd.location.y))
-                flat.append(deg(nd.location.x))
+                flat.append(deg(loc.y))
+                flat.append(deg(loc.x))
         if obj.id in needed_ways and len(flat) >= 4:
             member_geometry[obj.id] = array("d", flat)
         if not obj.tags or len(flat) < 2:
@@ -322,8 +351,41 @@ def read_nodes_and_ways(path, zoom, sink, needed_ways, stats, location_store):
             element["n"] = node_ids
         for letter in kind:
             stats.count("ways_" + letter)
-        tiles, _ = line_tiles(flat, n)
-        sink.add(tiles, dumps(element), kind)
+        sink.add(object_tiles(flat, n), dumps(element), kind)
+    sink.close()
+    return {"counts": stats.counts, "bytes_by_kind": stats.bytes_by_kind,
+            "extent": [stats.min_lat, stats.min_lon, stats.max_lat, stats.max_lon],
+            "member_geometry": member_geometry}
+
+
+_WORKER_ARGS = None
+
+
+def _run_worker(index):
+    path, zoom, needed_ways, workers, tmp_dir = _WORKER_ARGS
+    return nodes_and_ways_worker(path, zoom, needed_ways, workers, index,
+                                 os.path.join(tmp_dir, f"lines-{index}.gz"))
+
+
+def read_nodes_and_ways(path, zoom, needed_ways, workers, tmp_dir, stats):
+    """Pass 2 over [workers] processes; returns the relation member geometry."""
+    global _WORKER_ARGS
+    _WORKER_ARGS = (path, zoom, needed_ways, workers, tmp_dir)
+    if workers == 1:
+        results = [_run_worker(0)]
+    else:
+        import multiprocessing
+        with multiprocessing.get_context("fork").Pool(workers) as pool:
+            results = pool.map(_run_worker, range(workers))
+    member_geometry = {}
+    for r in results:
+        for k, v in r["counts"].items():
+            stats.count(k, v)
+        for k, v in r["bytes_by_kind"].items():
+            stats.bytes_by_kind[k] = stats.bytes_by_kind.get(k, 0) + v
+        if r["extent"][0] <= r["extent"][2]:
+            stats.extent(r["extent"])
+        member_geometry.update(r["member_geometry"])
     return member_geometry
 
 
@@ -447,9 +509,9 @@ class PartWriter:
         return self.parts
 
 
-def sort_and_write(lines_path, tmp_dir, part_writer, stats, sort_memory):
+def sort_and_write(lines_glob, tmp_dir, part_writer, stats, sort_memory):
     """Sorts the tile lines by tile id and writes one gzip JSON per tile."""
-    cmd = (f"gzip -dc '{lines_path}' | LC_ALL=C sort -S {sort_memory} --parallel=4 "
+    cmd = (f"gzip -dc {lines_glob} | LC_ALL=C sort -S {sort_memory} --parallel=4 "
            f"-T '{tmp_dir}' --compress-program=gzip")
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, text=True, encoding="utf-8",
                             bufsize=1 << 20)
@@ -503,7 +565,7 @@ def main():
     ap.add_argument("--max-part-bytes", type=int, default=1_900_000_000,
                     help="largest archive part (GitHub release assets must be under 2 GiB)")
     ap.add_argument("--tmp-dir", default=None, help="room for temporary files (default: next to --out-dir)")
-    ap.add_argument("--locations", default="flex_mem", help="pyosmium node location storage")
+    ap.add_argument("--workers", type=int, default=os.cpu_count() or 1, help="processes for the node/way pass")
     ap.add_argument("--sort-memory", default="40%", help="memory for sort(1)")
     args = ap.parse_args()
 
@@ -518,17 +580,24 @@ def main():
 
     try:
         t = time.time()
-        log(f"Pass 1/4: relations in {args.input}")
-        wanted, needed_ways = read_relations(args.input, stats)
+        log("Pass 0/4: node coordinates onto the ways (osmium add-locations-to-ways)")
+        located = os.path.join(tmp_dir, "located.osm.pbf")
+        subprocess.run(["osmium", "add-locations-to-ways", args.input, "-o", located, "--no-progress"], check=True)
+        stats.phases["locations"] = time.time() - t
+
+        t = time.time()
+        log("Pass 1/4: relations")
+        wanted, needed_ways = read_relations(located, stats)
         stats.phases["relations"] = time.time() - t
         log(f"  {len(wanted):,} relations, {len(needed_ways):,} member ways needed")
 
         t = time.time()
-        log("Pass 2/4: nodes and ways")
-        lines_path = os.path.join(tmp_dir, "lines.gz")
-        sink = LineSink(lines_path, args.zoom, stats)
-        member_geometry = read_nodes_and_ways(args.input, args.zoom, sink, needed_ways, stats, args.locations)
+        log(f"Pass 2/4: nodes and ways ({args.workers} processes)")
+        member_geometry = read_nodes_and_ways(located, args.zoom, needed_ways, args.workers, tmp_dir, stats)
+        os.remove(located)
         stats.phases["nodes_ways"] = time.time() - t
+        lines_path = os.path.join(tmp_dir, "lines-relations.gz")
+        sink = LineSink(lines_path, args.zoom, stats)
 
         t = time.time()
         log("Pass 3/4: relation geometry")
@@ -551,7 +620,7 @@ def main():
             "license": "ODbL-1.0 (https://opendatacommons.org/licenses/odbl/)",
         }
         part_writer = PartWriter(args.out_dir, args.name, args.zoom, args.max_part_bytes, metadata)
-        largest = sort_and_write(lines_path, tmp_dir, part_writer, stats, args.sort_memory)
+        largest = sort_and_write(os.path.join(tmp_dir, "lines-*.gz"), tmp_dir, part_writer, stats, args.sort_memory)
         parts = part_writer.finish()
         stats.phases["sort_write"] = time.time() - t
     finally:

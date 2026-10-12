@@ -243,7 +243,7 @@ class Overpass:
                     raise RuntimeError(remark)
                 return doc
             except urllib.error.HTTPError as err:
-                if err.code in (429, 504, 503):
+                if err.code in (429, 500, 502, 503, 504):
                     print(f"  Overpass HTTP {err.code}: resting 60 s", flush=True)
                     time.sleep(60)
                     continue
@@ -265,6 +265,7 @@ def main():
     ap.add_argument("--delay", type=float, default=10.0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--report", default="compare-report.json")
+    ap.add_argument("--today", action="store_true", help="compare with today's data instead of the extract's date")
     args = ap.parse_args()
 
     with open(os.path.join(args.dir, f"{args.region}.summary.json")) as f:
@@ -275,7 +276,7 @@ def main():
     points = archive.sample_points(summary["bounds"], args.points, rnd)
 
     ts = summary.get("osm_timestamp", "")
-    date = f'[date:"{ts}"]' if ts else ""
+    date = f'[date:"{ts}"]' if ts and not args.today else ""
     try:
         overpass.run(f'[out:json][timeout:25]{date};node(1);out ids;')
     except RuntimeError as err:
@@ -286,13 +287,19 @@ def main():
 
     totals = {"p": [0, 0, 0], "a": [0, 0, 0], "roads": [0, 0, 0]}  # [both, archive only, overpass only]
     diffs = []
+    skipped = 0
     edge = 1.0  # metres: objects this close to the circle's edge may fall either way
     for i, (lat, lon) in enumerate(points):
         fill = dict(date=date, r=args.radius, lat=f"{lat:.7f}", lon=f"{lon:.7f}")
         q = DISCOVERY.format(**fill)
         p_query, a_query = q.split("out ids;\n(", 1)
-        p_doc = overpass.run(p_query + "out ids;")
-        a_doc = overpass.run(f"[out:json][timeout:60]{date};\n(" + a_query)
+        try:
+            p_doc = overpass.run(p_query + "out ids;")
+            a_doc = overpass.run(f"[out:json][timeout:60]{date};\n(" + a_query)
+        except RuntimeError as err:
+            print(f"  spot {i}: skipped ({str(err)[:80]})", flush=True)
+            skipped += 1
+            continue
         got = archive.around(lat, lon, args.radius)
         for block, doc in (("p", p_doc), ("a", a_doc)):
             want = {({"node": "n", "way": "w", "relation": "r"}[e["type"]], e["id"]) for e in doc["elements"]}
@@ -314,7 +321,11 @@ def main():
         s = math.floor(lat / ROAD_TILE) * ROAD_TILE
         w = math.floor(lon / ROAD_TILE) * ROAD_TILE
         box = (s, w, s + ROAD_TILE, w + ROAD_TILE)
-        r_doc = overpass.run(ROADS.format(date=date, s=box[0], w=box[1], n=box[2], e=box[3]))
+        try:
+            r_doc = overpass.run(ROADS.format(date=date, s=box[0], w=box[1], n=box[2], e=box[3]))
+        except RuntimeError as err:
+            print(f"  spot {i} roads: skipped ({str(err)[:80]})", flush=True)
+            continue
         want = {e["id"] for e in r_doc["elements"] if e["type"] == "way"}
         have = archive.roads(box)
         totals["roads"][0] += len(have & want)
@@ -331,7 +342,7 @@ def main():
                 flush=True)
 
     report = {"region": args.region, "server": args.server, "as_of": ts if date else "today",
-              "spots": len(points), "radius": args.radius, "totals": totals, "differences": diffs}
+              "spots": len(points), "skipped": skipped, "radius": args.radius, "totals": totals, "differences": diffs}
     with open(args.report, "w") as f:
         json.dump(report, f, indent=1)
     print()
@@ -339,7 +350,7 @@ def main():
     for b, t in totals.items():
         name = {"p": "Buildings & places", "a": "Resource areas", "roads": "Roads"}[b]
         print(f"{name:20} {t[0]:>8,} in both   {t[1]:>5} archive only   {t[2]:>5} Overpass only")
-    print(f"Overpass requests: {overpass.requests}")
+    print(f"Overpass requests: {overpass.requests}, spots skipped: {skipped}")
     for d in diffs[:60]:
         print("  ", json.dumps(d, ensure_ascii=False)[:300])
 

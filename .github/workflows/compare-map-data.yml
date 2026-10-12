@@ -21,6 +21,10 @@ on:
       delay:
         description: "Seconds between Overpass requests"
         default: "5"
+      today:
+        description: "Compare with today's data (faster) instead of the extract's date"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -57,7 +61,7 @@ jobs:
           }
           if ! python tools/compare.py data --region "${{ github.event.inputs.region }}" \
               --points "${{ github.event.inputs.points }}" --server "${{ github.event.inputs.server }}" \
-              --delay "${{ github.event.inputs.delay }}" --report compare-report.json 2>&1 | tee compare-log.txt; then
+              --delay "${{ github.event.inputs.delay }}" --report compare-report.json ${{ github.event.inputs.today == 'true' && '--today' || '' }} 2>&1 | tee compare-log.txt; then
             annotate error "Compare failed" compare-log.txt
             exit 1
           fi

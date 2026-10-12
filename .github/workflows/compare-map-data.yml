@@ -1,0 +1,61 @@
+# Compares a published region with Overpass (tools/compare.py): the game's own
+# discovery and road queries at sample spots, answered by both.
+
+name: Compare map data with Overpass
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (empty = latest)"
+        default: ""
+      region:
+        description: "Region name (as in the file names)"
+        default: "netherlands"
+      points:
+        description: "Number of spots"
+        default: "100"
+      server:
+        description: "Overpass server"
+        default: "https://overpass-api.de/api/interpreter"
+      delay:
+        description: "Seconds between Overpass requests"
+        default: "5"
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q osmium pmtiles orjson
+      - name: Download ${{ github.event.inputs.region }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          if [ -z "$tag" ]; then tag=$(gh release view --json tagName -q .tagName); fi
+          echo "Release: $tag"
+          gh release download "$tag" --pattern "${{ github.event.inputs.region }}*" --dir data
+          ls -l data
+      - name: Compare
+        run: |
+          python tools/compare.py data --region "${{ github.event.inputs.region }}" \
+            --points "${{ github.event.inputs.points }}" --server "${{ github.event.inputs.server }}" \
+            --delay "${{ github.event.inputs.delay }}" --report compare-report.json | tee compare-log.txt
+          {
+            echo '```'
+            sed -n '/=== Archive vs Overpass/,$p' compare-log.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compare-report
+          path: compare-report.json

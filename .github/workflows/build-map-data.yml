@@ -72,7 +72,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q osmium-tool
-          pip install -q osmium pmtiles
+          pip install -q osmium pmtiles orjson
 
       - name: Name
         id: name

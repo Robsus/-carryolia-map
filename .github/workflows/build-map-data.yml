@@ -25,6 +25,11 @@ on:
 permissions:
   contents: write
 
+# bash with pipefail: a failing command inside "cmd | tee" fails the step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   plan:
     runs-on: ubuntu-latest

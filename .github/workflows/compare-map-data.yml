@@ -25,6 +25,11 @@ on:
 permissions:
   contents: read
 
+# bash with pipefail: a failing command inside "cmd | tee" fails the step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   compare:
     runs-on: ubuntu-latest

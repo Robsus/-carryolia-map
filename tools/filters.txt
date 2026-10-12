@@ -1,0 +1,29 @@
+# Carryolia map data: what to keep from an OpenStreetMap extract.
+#
+# Used by `osmium tags-filter <extract> --expressions=tools/filters.txt`.
+# It mirrors the Overpass queries in the game (BuildingRepository: discovery,
+# RoadRepository: roads). It is deliberately a little wider than those
+# queries where osmium can't combine two tags (storage tanks, recycling,
+# bicycle parkings); build_tiles.py applies the exact rules afterwards.
+# osmium keeps the nodes of kept ways and the members of kept relations.
+
+# --- Buildings and places (discovery "points" block) ---
+nwr/building
+nwr/shop
+nwr/amenity=place_of_worship,restaurant,fast_food,cafe,food_court,veterinary,fuel,police,fire_station,townhall,library,school,college,university,recycling,bicycle_parking
+nwr/tourism=museum
+nwr/man_made=windmill,works,petroleum_well,storage_tank
+nwr/craft=bakery,sawmill,carpenter,tailor,blacksmith,metal_construction,welder
+nwr/industrial=mine,refinery,oil,petroleum,scrap_yard
+r/natural=water
+
+# --- Resource areas (discovery "areas" block) ---
+w/landuse=farmland,meadow,orchard,vineyard,greenhouse_horticulture,plant_nursery,allotments,farmyard,heath,grass,flowerbed,forest,quarry
+w/natural=heath,wetland,wood,tree_row,water
+w/leisure=garden,park
+r/landuse=forest
+r/natural=wood
+r/leisure=park
+
+# --- Roads (RoutingConfig.ROAD_HIGHWAY_TYPES) ---
+w/highway=trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,pedestrian,footway,path,steps,cycleway,bridleway,track

@@ -1,0 +1,159 @@
+# Builds Carryolia's map data from Geofabrik extracts and publishes it as a
+# GitHub release. Each region runs as its own job on its own machine.
+#
+# Start by hand: Actions › Build map data › Run workflow.
+# The monthly schedule is switched on once all of Europe has been tested.
+
+name: Build map data
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Geofabrik regions, space-separated (e.g. europe/netherlands europe/belgium). Empty = tools/regions.txt"
+        default: "europe/netherlands"
+      zoom:
+        description: "Tile zoom level"
+        default: "15"
+      latest:
+        description: "Make this the release the game uses (latest)"
+        type: boolean
+        default: true
+  # schedule:
+  #   - cron: "17 3 2 * *"   # 03:17 UTC on the 2nd of every month
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      regions: ${{ steps.list.outputs.regions }}
+      tag: ${{ steps.list.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        env:
+          INPUT_REGIONS: ${{ github.event.inputs.regions }}
+        run: |
+          if [ -n "$INPUT_REGIONS" ]; then
+            regions="$INPUT_REGIONS"
+          else
+            regions=$(grep -v '^#' tools/regions.txt | xargs)
+          fi
+          echo "regions=$(printf '%s\n' $regions | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+          echo "tag=data-$(date -u +%Y-%m-%d)-r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        region: ${{ fromJson(needs.plan.outputs.regions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room on the disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          df -h / /mnt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q osmium-tool
+          pip install -q osmium pmtiles
+
+      - name: Name
+        id: name
+        run: echo "name=$(basename '${{ matrix.region }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Download ${{ matrix.region }}
+        working-directory: /mnt/work
+        run: |
+          wget -nv -U "carryolia-map-builder (github.com/${GITHUB_REPOSITORY})" \
+            "https://download.geofabrik.de/${{ matrix.region }}-latest.osm.pbf" -O raw.osm.pbf
+          wget -nv -U "carryolia-map-builder (github.com/${GITHUB_REPOSITORY})" \
+            "https://download.geofabrik.de/${{ matrix.region }}.poly" -O "${{ steps.name.outputs.name }}.poly"
+          ls -l
+
+      - name: Filter
+        working-directory: /mnt/work
+        run: |
+          /usr/bin/time -v osmium tags-filter raw.osm.pbf --expressions="$GITHUB_WORKSPACE/tools/filters.txt" \
+            -o filtered.osm.pbf --no-progress 2> filter-time.txt || (cat filter-time.txt; exit 1)
+          grep -E "Elapsed|Maximum resident" filter-time.txt
+          rm raw.osm.pbf
+          ls -l
+
+      - name: Build tiles
+        working-directory: /mnt/work
+        run: |
+          /usr/bin/time -v python "$GITHUB_WORKSPACE/tools/build_tiles.py" filtered.osm.pbf \
+            --name "${{ steps.name.outputs.name }}" --zoom "${{ github.event.inputs.zoom || '15' }}" \
+            --out-dir out --tmp-dir /mnt/work/tmp 2> build-time.txt | tee build-log.txt \
+            || (cat build-time.txt; exit 1)
+          grep -E "Elapsed|Maximum resident" build-time.txt | tee -a build-log.txt
+          mv "${{ steps.name.outputs.name }}.poly" out/
+          rm filtered.osm.pbf
+          {
+            echo '### ${{ matrix.region }}'
+            echo '```'
+            sed -n '/=== Carryolia/,$p' build-log.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          df -h /mnt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: region-${{ steps.name.outputs.name }}
+          path: |
+            /mnt/work/out/*.pmtiles
+            /mnt/work/out/*.summary.json
+            /mnt/work/out/*.poly
+          compression-level: 0
+          retention-days: 3
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Manifest
+        run: |
+          python tools/make_manifest.py dist --tag "${{ needs.plan.outputs.tag }}" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ needs.plan.outputs.tag }}/" \
+            -o dist/map-data.json
+          ls -l dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          latest_flag="--latest"
+          if [ "${{ github.event.inputs.latest }}" = "false" ]; then latest_flag="--latest=false"; fi
+          gh release create "$TAG" dist/*.pmtiles dist/*.summary.json dist/map-data.json \
+            --title "Map data $TAG" $latest_flag \
+            --notes "Carryolia map data built from Geofabrik extracts. Map data © OpenStreetMap contributors, available under the Open Database License (ODbL 1.0)."
+      - name: Check partial downloads
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          first=$(ls dist/*.pmtiles | head -1 | xargs basename)
+          magic=$(curl -sL -r 0-6 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${first}")
+          echo "First bytes of ${first}: ${magic}"
+          [ "$magic" = "PMTiles" ]

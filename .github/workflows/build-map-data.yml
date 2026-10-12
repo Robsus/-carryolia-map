@@ -99,11 +99,22 @@ jobs:
       - name: Build tiles
         working-directory: /mnt/work
         run: |
-          /usr/bin/time -v python "$GITHUB_WORKSPACE/tools/build_tiles.py" filtered.osm.pbf \
-            --name "${{ steps.name.outputs.name }}" --zoom "${{ github.event.inputs.zoom || '15' }}" \
-            --out-dir out --tmp-dir /mnt/work/tmp 2> build-time.txt | tee build-log.txt \
-            || (cat build-time.txt; exit 1)
+          # The log's key lines also go out as annotations: readable through the API without the log files.
+          annotate() {
+            msg=$(tail -c 3500 "$3" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"}{print}')
+            echo "::$1 title=$2::$msg"
+          }
+          if ! /usr/bin/time -v python "$GITHUB_WORKSPACE/tools/build_tiles.py" filtered.osm.pbf \
+              --name "${{ steps.name.outputs.name }}" --zoom "${{ github.event.inputs.zoom || '15' }}" \
+              --out-dir out --tmp-dir /mnt/work/tmp 2> build-time.txt | tee build-log.txt; then
+            cat build-time.txt >> build-log.txt
+            df -h / /mnt >> build-log.txt
+            annotate error "Build failed: ${{ matrix.region }}" build-log.txt
+            exit 1
+          fi
           grep -E "Elapsed|Maximum resident" build-time.txt | tee -a build-log.txt
+          sed -n '/=== Carryolia/,$p' build-log.txt > build-summary.txt
+          annotate notice "Built: ${{ matrix.region }}" build-summary.txt
           mv "${{ steps.name.outputs.name }}.poly" out/
           rm filtered.osm.pbf
           {

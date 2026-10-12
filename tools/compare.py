@@ -38,7 +38,7 @@ sys.path.insert(0, HERE)
 import build_tiles as bt  # noqa: E402
 
 R = 6_378_137.0
-UA = "carryolia-map-compare (github.com/Robsus/-carryolia-map)"
+UA = "carryolia-map-compare (github.com/Robsus/carryolia-map)"
 ROAD_TILE = 0.0025  # RoutingConfig.ROAD_TILE_SIZE_DEGREES
 
 

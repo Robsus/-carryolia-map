@@ -23,7 +23,7 @@ instead of asking the public Overpass servers for every spot a player visits.
 Every release holds the archive parts (`<region>-NN.pmtiles`, each under 2 GiB),
 a summary per region and `map-data.json`. The game starts from
 
-    https://github.com/Robsus/-carryolia-map/releases/latest/download/map-data.json
+    https://github.com/Robsus/carryolia-map/releases/latest/download/map-data.json
 
 ## Building it yourself
 

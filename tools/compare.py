@@ -98,7 +98,8 @@ class Archive:
             f = open(path, "rb")
             reader = Reader(MmapSource(f))
             self.files.append(reader)
-            self.zoom = reader.header()["max_zoom"]
+            # The map tiles' zoom; the archive's highest zoom holds shared objects ("obj").
+            self.zoom = reader.metadata().get("zoom") or reader.header()["min_zoom"]
         if not self.files:
             raise SystemExit(f"no {region}-*.pmtiles in {directory}")
         self.cache = {}

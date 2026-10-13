@@ -185,6 +185,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add status/regions.md
-          git diff --cached --quiet || git commit -m "Map data status after run ${GITHUB_RUN_NUMBER}"
-          git pull --rebase -q origin main && git push origin HEAD:main
+          # Write the new status on top of the newest main (another run may have committed since).
+          cp status/regions.md "$RUNNER_TEMP/regions.md"
+          for attempt in 1 2 3; do
+            git fetch -q --depth=1 origin main
+            git reset -q --hard origin/main
+            mkdir -p status && cp "$RUNNER_TEMP/regions.md" status/regions.md
+            git add status/regions.md
+            git diff --cached --quiet && break
+            git commit -q -m "Map data status after run ${GITHUB_RUN_NUMBER}"
+            git push -q origin HEAD:main && break
+            sleep 10
+          done

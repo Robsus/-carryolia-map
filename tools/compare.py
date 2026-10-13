@@ -128,7 +128,7 @@ class Archive:
         found = {}
         for t in self.tiles_for_box(s, w, n_, e):
             for el in self.tile(*t):
-                if "p" not in el["k"] and "a" not in el["k"]:
+                if "p" not in el["k"] and "q" not in el["k"] and "a" not in el["k"]:
                     continue
                 if el["t"] == "n":
                     d = line_dist(lat, lon, el["c"])
@@ -186,7 +186,7 @@ DISCOVERY = """[out:json][timeout:60]{date};
 (
   nwr["building"](around:{r},{lat},{lon});
   nwr["shop"](around:{r},{lat},{lon});
-  nwr["amenity"~"^(place_of_worship|restaurant|fast_food|cafe|food_court|veterinary|fuel|police|fire_station|townhall|library|school|college|university)$"](around:{r},{lat},{lon});
+  nwr["amenity"~"^(place_of_worship|restaurant|fast_food|cafe|food_court|veterinary|fuel|police|fire_station|townhall|library|school|college|university|pub|nightclub|community_centre)$"](around:{r},{lat},{lon});
   nwr["tourism"="museum"](around:{r},{lat},{lon});
   nwr["man_made"~"^(windmill|works|petroleum_well)$"](around:{r},{lat},{lon});
   nwr["man_made"="storage_tank"]["content"~"^(oil|fuel|diesel)$"](around:{r},{lat},{lon});
@@ -306,7 +306,8 @@ def main():
         got = archive.around(lat, lon, args.radius)
         for block, doc in (("p", p_doc), ("a", a_doc)):
             want = {({"node": "n", "way": "w", "relation": "r"}[e["type"]], e["id"]) for e in doc["elements"]}
-            have = {k for k, (kinds, d, _) in got.items() if block in kinds}
+            # "q" (since game 1.3.5) belongs to the points block too.
+            have = {k for k, (kinds, d, _) in got.items() if block in kinds or (block == "p" and "q" in kinds)}
             near_edge = {k for k, (kinds, d, _) in got.items() if d > args.radius - edge}
             only_archive = have - want - near_edge
             only_overpass = want - have

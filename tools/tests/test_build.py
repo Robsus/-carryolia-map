@@ -169,6 +169,14 @@ def make_map():
     for rt in ["centre", "container"]:
         lat, lon = rnd()
         m.node(lat, lon, {"amenity": "recycling", "recycling_type": rt})
+    for _ in range(30):  # game 1.3.5: pubs, nightclubs, community centres ("q")
+        lat, lon = rnd()
+        m.node(lat, lon, {"amenity": random.choice(["pub", "nightclub", "community_centre"])})
+    for amenity in ["pub", "community_centre"]:
+        lat, lon = rnd()
+        m.way(ring(lat, lon, 12, 4), {"amenity": amenity, "building": "yes"}, closed=True)  # "p" (building)
+        lat, lon = rnd()
+        m.way(ring(lat, lon, 25, 5), {"amenity": amenity}, closed=True)  # "q"
     for _ in range(200):  # fields, meadows, parks
         lat, lon = rnd()
         m.way(ring(lat, lon, random.uniform(40, 400), 10, 0.4),
@@ -223,18 +231,18 @@ def expected_objects(m):
     """Every object the game's queries match, with its full geometry, from the synthetic map."""
     objs = {}
     for nid, (lat, lon, tags) in m.nodes.items():
-        if tags and bt.is_point(tags, "n"):
-            objs[("n", nid)] = ("p", [lat, lon], None)
+        if tags and bt.point_kind(tags, "n"):
+            objs[("n", nid)] = (bt.point_kind(tags, "n"), [lat, lon], None)
     for wid, (ids, tags) in m.ways.items():
         if not tags:
             continue
-        kind = ("p" if bt.is_point(tags, "w") else "") + ("a" if bt.is_area(tags, "w") else "") + \
+        kind = bt.point_kind(tags, "w") + ("a" if bt.is_area(tags, "w") else "") + \
                ("r" if bt.is_road(tags, "w") else "")
         if kind:
             flat = [v for nid in ids for v in m.nodes[nid][:2]]
             objs[("w", wid)] = (kind, flat, None)
     for rid, (members, tags) in m.rels.items():
-        kind = ("p" if bt.is_point(tags, "r") else "") + ("a" if bt.is_area(tags, "r") else "")
+        kind = bt.point_kind(tags, "r") + ("a" if bt.is_area(tags, "r") else "")
         if not kind:
             continue
         lines = []
@@ -290,7 +298,7 @@ def archive_around(tiles, lat, lon, radius):
     found = {}
     for t in tiles_for_box(s, w, n_, e):
         for el in tiles.get(t, []):
-            if "p" not in el["k"] and "a" not in el["k"]:
+            if "p" not in el["k"] and "q" not in el["k"] and "a" not in el["k"]:
                 continue
             if el["t"] == "n":
                 d = line_dist(lat, lon, el["c"])
@@ -369,6 +377,14 @@ def main():
     print(f"shared objects: {len(OBJECTS)}")
     greenhouse = [el for k, el in by_key.items() if k[0] == "w" and el["tags"].get("building") == "greenhouse"]
     assert greenhouse and all(el["k"] == "pa" for el in greenhouse), "greenhouses are points and areas"
+    # Game 1.3.5: pubs, nightclubs and community centres are "q", unless they are a building ("p").
+    drinks = {k: el for k, el in by_key.items() if el["tags"].get("amenity") in bt.AMENITY_POINTS_135}
+    assert len(drinks) == 34, f"pubs, nightclubs, community centres: {len(drinks)}"
+    for k, el in drinks.items():
+        want_kind = "p" if "building" in el["tags"] else "q"
+        assert el["k"] == want_kind, f"{k}: kind {el['k']}, expected {want_kind}"
+        assert "c" in el, f"{k}: no centre"
+    assert sum(1 for el in drinks.values() if el["k"] == "q") == 32, "q objects"
     motorway = [k for k in by_key if k[0] == "w" and by_key[k]["tags"].get("highway") == "motorway"]
     assert not motorway, "motorways are not roads for the game"
     print("single-object checks: ok")
@@ -379,7 +395,7 @@ def main():
         lat, lon = offset(LAT0, LON0, random.uniform(-6500, 6500), random.uniform(-6500, 6500))
         radius = random.choice([150, 200, 250, 600, 2000])
         want = {k for k, (kind, flat, lines) in expected.items()
-                if ("p" in kind or "a" in kind) and obj_dist(lat, lon, flat, lines) <= radius}
+                if ("p" in kind or "q" in kind or "a" in kind) and obj_dist(lat, lon, flat, lines) <= radius}
         got = archive_around(tiles, lat, lon, radius)
         missing = want - set(got)
         extra = set(got) - want

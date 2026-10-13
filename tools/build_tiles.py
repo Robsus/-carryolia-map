@@ -16,6 +16,10 @@ the Overpass answer it used to get (see the app's MapDataArchive):
   "id"    OSM id
   "k"     why it is here, one letter per query block:
             p = discovery points block ("out tags center")
+            q = discovery points block, objects the game asks for since 1.3.5
+                (pubs, nightclubs, community centres: QUERY_POINTS_135).
+                Older versions skip the letter, so they don't show these as
+                plain buildings. An object that is also "p" is only "p".
             a = discovery areas block ("out tags geom")
             r = roads (RoadRepository, "out body" + nodes)
   "tags"  all OSM tags
@@ -74,6 +78,8 @@ AMENITY_POINTS = {
     "place_of_worship", "restaurant", "fast_food", "cafe", "food_court", "veterinary",
     "fuel", "police", "fire_station", "townhall", "library", "school", "college", "university",
 }
+# Since game 1.3.5 (letter "q", see above).
+AMENITY_POINTS_135 = {"pub", "nightclub", "community_centre"}
 MAN_MADE_POINTS = {"windmill", "works", "petroleum_well"}
 TANK_CONTENTS = {"oil", "fuel", "diesel"}
 CRAFT_POINTS = {"bakery", "sawmill", "carpenter", "tailor", "blacksmith", "metal_construction", "welder"}
@@ -145,6 +151,20 @@ def is_point(tags, osm_type):
     if osm_type == "r" and tags.get("natural") == "water":
         return True
     return False
+
+
+def is_point_135(tags, osm_type):
+    """Discovery points the game asks for since 1.3.5 (and older versions don't): letter "q"."""
+    return tags.get("amenity") in AMENITY_POINTS_135 and not is_point(tags, osm_type)
+
+
+def point_kind(tags, osm_type):
+    """"p", "q" or "" for the discovery's points block."""
+    if is_point(tags, osm_type):
+        return "p"
+    if is_point_135(tags, osm_type):
+        return "q"
+    return ""
 
 
 def is_area(tags, osm_type):
@@ -322,7 +342,7 @@ def read_relations(path, stats):
     needed_ways = set()
     for rel in osmium.FileProcessor(path, osmium.osm.RELATION):
         tags = {t.k: t.v for t in rel.tags}
-        kind = ("p" if is_point(tags, "r") else "") + ("a" if is_area(tags, "r") else "")
+        kind = point_kind(tags, "r") + ("a" if is_area(tags, "r") else "")
         if not kind:
             continue
         members = [(m.ref, m.role) for m in rel.members if m.type == "w"]
@@ -373,14 +393,15 @@ def nodes_and_ways_worker(path, zoom, needed_ways, workers, index, lines_path):
             if not obj.tags:
                 continue
             tags = {t.k: t.v for t in obj.tags}
-            if not is_point(tags, "n") or not obj.location.valid():
+            kind = point_kind(tags, "n")
+            if not kind or not obj.location.valid():
                 continue
             lat, lon = deg(obj.location.y), deg(obj.location.x)
             tx, ty = tile_xy(lat, lon, n)
-            element = {"t": "n", "id": obj.id, "k": "p", "tags": tags, "c": [lat, lon]}
+            element = {"t": "n", "id": obj.id, "k": kind, "tags": tags, "c": [lat, lon]}
             stats.extent([lat, lon, lat, lon])
-            stats.count("nodes_p")
-            sink.add([(clamp(int(tx), n), clamp(int(ty), n))], dumps(element), "p")
+            stats.count("nodes_" + kind)
+            sink.add([(clamp(int(tx), n), clamp(int(ty), n))], dumps(element), kind)
             continue
 
         # A way.
@@ -397,12 +418,12 @@ def nodes_and_ways_worker(path, zoom, needed_ways, workers, index, lines_path):
         if not obj.tags or len(flat) < 2:
             continue
         tags = {t.k: t.v for t in obj.tags}
-        kind = ("p" if is_point(tags, "w") else "") + ("a" if is_area(tags, "w") else "") + \
+        kind = point_kind(tags, "w") + ("a" if is_area(tags, "w") else "") + \
                ("r" if is_road(tags, "w") else "")
         if not kind:
             continue
         element = {"t": "w", "id": obj.id, "k": kind, "tags": tags, "g": flat}
-        if "p" in kind or "a" in kind:
+        if "p" in kind or "q" in kind or "a" in kind:
             b = bounds_of(flat)
             element["b"] = b
             element["c"] = centre_of(b)
@@ -743,7 +764,7 @@ def main():
         lt = summary["largest_tile"]
         print(f"Largest tile:     {lt['gzip_bytes'] / 1000:.0f} kB gzip ({lt['elements']:,} elements) "
               f"at {lt['lat']}, {lt['lon']}")
-    print(f"Objects:          {c.get('nodes_p', 0):,} point nodes, {c.get('ways_p', 0):,} building ways, "
+    print(f"Objects:          {c.get('nodes_p', 0) + c.get('nodes_q', 0):,} point nodes, {c.get('ways_p', 0) + c.get('ways_q', 0):,} building ways, "
           f"{c.get('ways_a', 0):,} area ways, {c.get('ways_r', 0):,} roads")
     print(f"Relations:        {c.get('relations_wanted', 0):,} wanted, {c.get('relations_big', 0):,} too big, "
           f"{c.get('relation_tile_entries', 0):,} tile entries")

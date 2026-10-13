@@ -131,6 +131,8 @@ class Archive:
                     continue
                 if el["t"] == "n":
                     d = line_dist(lat, lon, el["c"])
+                elif "f" in el and el["t"] == "w":
+                    d = min(line_dist(lat, lon, run) for run in el["f"])  # shared object stub
                 elif el["t"] == "w":
                     d = line_dist(lat, lon, el["g"])
                 elif "m" in el:

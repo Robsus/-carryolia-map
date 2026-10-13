@@ -206,6 +206,12 @@ def make_map():
     # A forest relation too big for the game (> 50,000 points).
     huge = m.way(ring(LAT0 - 0.03, LON0 - 0.04, 1500, 50_500, 0.0), closed=True)
     m.rel([("w", huge, "outer")], {"type": "multipolygon", "natural": "wood"})
+    # A big forest way (shared object: stored once, stubs in the tiles it crosses).
+    m.way(ring(LAT0 + 0.03, LON0 + 0.05, 2000, 900, 0.1), {"landuse": "forest"}, closed=True)
+    # A forest relation big enough to be shared, with two outer rings.
+    r1 = m.way(ring(LAT0 + 0.04, LON0 - 0.06, 1500, 400, 0.1), closed=True)
+    r2 = m.way(ring(LAT0 + 0.05, LON0 - 0.03, 600, 200, 0.1), closed=True)
+    m.rel([("w", r1, "outer"), ("w", r2, "outer")], {"type": "multipolygon", "natural": "wood"})
     # A park relation whose members are all missing from the extract.
     m.rel([("w", 999_999_999, "outer")], {"type": "multipolygon", "leisure": "park"})
     return m
@@ -248,7 +254,11 @@ def obj_dist(lat, lon, flat, lines):
 
 # ---------------------------------------------------------------- archive side
 
+OBJECTS = {}
+
+
 def load_archive(out_dir, name):
+    """Map tiles by (x, y); shared objects (other zoom levels) go into OBJECTS by (type, id)."""
     tiles = {}
     for fn in sorted(os.listdir(out_dir)):
         if fn.startswith(name) and fn.endswith(".pmtiles"):
@@ -257,7 +267,12 @@ def load_archive(out_dir, name):
                 for (z, x, y), data in all_tiles(get):
                     doc = json.loads(gzip.decompress(data))
                     assert doc["v"] == 1
-                    tiles.setdefault((x, y), []).extend(doc["e"])
+                    if z == ZOOM:
+                        tiles.setdefault((x, y), []).extend(doc["e"])
+                    else:
+                        for el in doc["e"]:
+                            assert bt.object_address(el["t"], el["id"]) == (z, x, y), "shared object at the wrong address"
+                            OBJECTS[(el["t"], el["id"])] = el
     return tiles
 
 
@@ -279,12 +294,12 @@ def archive_around(tiles, lat, lon, radius):
                 continue
             if el["t"] == "n":
                 d = line_dist(lat, lon, el["c"])
+            elif "f" in el:
+                d = min(line_dist(lat, lon, run) for run in el["f"])
             elif el["t"] == "w":
                 d = line_dist(lat, lon, el["g"])
             elif "m" in el:
                 d = min(line_dist(lat, lon, mm["g"]) for mm in el["m"])
-            else:
-                d = min(line_dist(lat, lon, run) for run in el["f"])
             if d <= radius:
                 key = (el["t"], el["id"])
                 found[key] = min(found.get(key, 1e18), d)
@@ -342,7 +357,16 @@ def main():
     assert "m" in forest and len(forest["m"]) == 4 and forest["k"] == "a", "forest relation"
     assert "m" not in lake and "f" in lake and lake["k"] == "p", "lake relation"
     assert huge.get("big") == 1 and "m" not in huge, "huge relation"
-    assert 4 not in rels, "relation without member geometry must be left out"
+    assert 5 not in rels, "relation without member geometry must be left out"
+    shared_rel = rels[4]
+    assert shared_rel.get("obj") == 1 and "m" not in shared_rel and "f" in shared_rel, "shared relation stub"
+    full = OBJECTS[("r", 4)]
+    assert len(full["m"]) == 2 and sum(len(mm["g"]) for mm in full["m"]) // 2 == 602, "shared relation object"
+    big_way = [el for k, el in by_key.items() if k[0] == "w" and el.get("obj") == 1]
+    assert len(big_way) == 1 and "g" not in big_way[0], "shared way stub"
+    full_way = OBJECTS[("w", big_way[0]["id"])]
+    assert len(full_way["g"]) // 2 == 901 and full_way["k"] == "a", "shared way object"
+    print(f"shared objects: {len(OBJECTS)}")
     greenhouse = [el for k, el in by_key.items() if k[0] == "w" and el["tags"].get("building") == "greenhouse"]
     assert greenhouse and all(el["k"] == "pa" for el in greenhouse), "greenhouses are points and areas"
     motorway = [k for k in by_key if k[0] == "w" and by_key[k]["tags"].get("highway") == "motorway"]

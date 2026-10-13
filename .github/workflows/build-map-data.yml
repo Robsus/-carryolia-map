@@ -78,12 +78,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only big regions need the extra room; removing this takes a few minutes.
       - name: Make room on the disk
+        if: matrix.region.mb >= 400
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift /usr/local/julia* \
             /opt/microsoft /opt/google /usr/lib/jvm /usr/local/share/powershell /usr/local/share/chromium || true
           sudo docker image prune --all --force >/dev/null 2>&1 || true
+
+      - name: Pick the work disk
+        run: |
           # Work where there is most room.
           root_free=$(df --output=avail -B1 / | tail -1)
           mnt_free=$(df --output=avail -B1 /mnt | tail -1)

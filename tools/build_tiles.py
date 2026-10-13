@@ -30,6 +30,14 @@ the Overpass answer it used to get (see the app's MapDataArchive):
           "around" distance test
   "big"   1: an area relation with more points than the game handles
           (DiscoveryConfig.MAX_FOREST_RELATION_POINTS); sent without members
+  "obj"   1: a shared object. A big resource area (a way or relation of the
+          areas block only, with at least SHARE_MIN_POINTS points crossing at
+          least SHARE_MIN_TILES tiles) is stored ONCE, as its own entry at
+          zoom OBJECT_ZOOM_RELATION (relations) or OBJECT_ZOOM_WAY (ways),
+          x = id % 2^z, y = id // 2^z, holding the full element. The tiles it
+          crosses hold this stub instead: tags, "c", "b" and "f" (its outline
+          pieces inside that tile), without "g" / "m". The game fetches the
+          full element only when it needs the outline.
 
 An object goes into every tile that a piece of its outline passes through,
 which is what Overpass's "around" and bounding-box filters look at.
@@ -87,6 +95,18 @@ HIGHWAYS = {
 }
 
 MAX_FOREST_RELATION_POINTS = 50_000  # DiscoveryConfig.MAX_FOREST_RELATION_POINTS
+
+# Shared objects (see "obj" above): big areas are stored once, not in every tile they cross.
+SHARE_MIN_POINTS = 300
+SHARE_MIN_TILES = 4
+OBJECT_ZOOM_RELATION = 26
+OBJECT_ZOOM_WAY = 27
+
+
+def object_address(osm_type, osm_id):
+    """Where a shared object lives in the archive: (z, x, y)."""
+    z = OBJECT_ZOOM_RELATION if osm_type == "r" else OBJECT_ZOOM_WAY
+    return z, osm_id % (1 << z), osm_id // (1 << z)
 
 
 def overpass_number(value):
@@ -188,6 +208,30 @@ def line_tiles(flat, n):
     return out, pts
 
 
+def line_pieces(lines, n):
+    """For flat lines: every tile they cross, and per tile the runs of segments inside it."""
+    pieces = {}
+    tiles_all = set()
+    for flat in lines:
+        flat = list(flat)
+        pts = [tile_xy(flat[i], flat[i + 1], n) for i in range(0, len(flat), 2)]
+        prev = set()
+        for i in range(len(pts) - 1):
+            seg = set()
+            segment_tiles(seg, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], n)
+            for t in seg:
+                runs = pieces.setdefault(t, [])
+                a = flat[2 * i: 2 * i + 2]
+                bpt = flat[2 * i + 2: 2 * i + 4]
+                if t in prev and runs and runs[-1][-2:] == a:
+                    runs[-1].extend(bpt)
+                else:
+                    runs.append(a + bpt)
+            prev = seg
+            tiles_all |= seg
+    return tiles_all, pieces
+
+
 def bounds_of(flat):
     lats = flat[0::2]
     lons = flat[1::2]
@@ -251,6 +295,22 @@ class LineSink:
             self.f.write(f"{tid:020d}\t{element_json}\n")
         self.stats.count("lines", len(tiles))
         self.stats.bytes_by_kind[kind] = self.stats.bytes_by_kind.get(kind, 0) + len(element_json) * len(tiles)
+
+    def add_object(self, osm_type, osm_id, element_json, kind):
+        """A shared object: stored once, at its own address."""
+        z, x, y = object_address(osm_type, osm_id)
+        tid = zxy_to_tileid(z, x, y)
+        self.f.write(f"{tid:020d}\t{element_json}\n")
+        self.stats.count("lines")
+        self.stats.count("shared_objects")
+        self.stats.bytes_by_kind["shared"] = self.stats.bytes_by_kind.get("shared", 0) + len(element_json)
+
+    def add_stub(self, element, pieces, kind):
+        """The tile entries of a shared object: per tile, its outline pieces there."""
+        for t, runs in pieces.items():
+            element["f"] = runs
+            self.add([t], dumps(element), kind)
+        element.pop("f", None)
 
     def close(self):
         self.f.close()
@@ -351,7 +411,16 @@ def nodes_and_ways_worker(path, zoom, needed_ways, workers, index, lines_path):
             element["n"] = node_ids
         for letter in kind:
             stats.count("ways_" + letter)
-        sink.add(object_tiles(flat, n), dumps(element), kind)
+        tiles = object_tiles(flat, n)
+        if kind == "a" and len(flat) // 2 >= SHARE_MIN_POINTS and len(tiles) >= SHARE_MIN_TILES:
+            # Stored once; the tiles get a stub with their outline pieces.
+            sink.add_object("w", obj.id, dumps(element), kind)
+            tiles_all, pieces = line_pieces([flat], n)
+            stub = {"t": "w", "id": obj.id, "k": kind, "tags": tags, "b": element["b"], "c": element["c"], "obj": 1}
+            sink.add_stub(stub, pieces, kind)
+            stats.count("ways_shared")
+        else:
+            sink.add(tiles, dumps(element), kind)
     sink.close()
     return {"counts": stats.counts, "bytes_by_kind": stats.bytes_by_kind,
             "extent": [stats.min_lat, stats.min_lon, stats.max_lat, stats.max_lon],
@@ -407,29 +476,18 @@ def write_relations(wanted, member_geometry, zoom, sink, stats):
         element = {"t": "r", "id": rel_id, "k": kind, "tags": tags, "c": centre_of(b), "b": b}
 
         # Which tiles each member passes through, and the pieces inside each tile.
-        pieces = {}
-        tiles_all = set()
-        for _, _, g in geoms:
-            flat = list(g)
-            pts = [tile_xy(flat[i], flat[i + 1], n) for i in range(0, len(flat), 2)]
-            prev = set()
-            for i in range(len(pts) - 1):
-                seg = set()
-                segment_tiles(seg, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], n)
-                for t in seg:
-                    runs = pieces.setdefault(t, [])
-                    a = flat[2 * i: 2 * i + 2]
-                    bpt = flat[2 * i + 2: 2 * i + 4]
-                    if t in prev and runs and runs[-1][-2:] == a:
-                        runs[-1].extend(bpt)
-                    else:
-                        runs.append(a + bpt)
-                prev = seg
-                tiles_all |= seg
+        tiles_all, pieces = line_pieces([g for _, _, g in geoms], n)
 
         if "a" in kind and not big:
-            element["m"] = [{"r": ref, "o": role, "g": list(g)} for ref, role, g in geoms]
-            sink.add(tiles_all, dumps(element), kind)
+            members = [{"r": ref, "o": role, "g": list(g)} for ref, role, g in geoms]
+            if points >= SHARE_MIN_POINTS and len(tiles_all) >= SHARE_MIN_TILES:
+                # Stored once; the tiles get a stub with their outline pieces.
+                sink.add_object("r", rel_id, dumps(dict(element, m=members)), kind)
+                sink.add_stub(dict(element, obj=1), pieces, kind)
+                stats.count("relations_shared")
+            else:
+                element["m"] = members
+                sink.add(tiles_all, dumps(element), kind)
         else:
             if big:
                 element["big"] = 1
@@ -495,6 +553,8 @@ class PartWriter:
         info["max_tile"] = tile_id
         info["tiles"] += 1
         z, x, y = tileid_to_zxy(tile_id)
+        if z != self.zoom:
+            return  # a shared object: not a place on the map
         n = 1 << z
         lon0 = x / n * 360.0 - 180.0
         lon1 = (x + 1) / n * 360.0 - 180.0
@@ -509,45 +569,61 @@ class PartWriter:
         return self.parts
 
 
-def sort_and_write(lines_glob, tmp_dir, part_writer, stats, sort_memory):
-    """Sorts the tile lines by tile id and writes one gzip JSON per tile."""
+def _compress(item):
+    """One tile: its JSON, gzip-compressed (runs in a worker process)."""
+    tid, raw = item
+    return tid, raw, gzip.compress(raw, compresslevel=9, mtime=0)
+
+
+def sort_and_write(lines_glob, tmp_dir, part_writer, stats, sort_memory, workers=1):
+    """Sorts the tile lines by tile id and writes one gzip JSON per tile (compressed on [workers] processes)."""
     cmd = (f"gzip -dc {lines_glob} | LC_ALL=C sort -S {sort_memory} --parallel=4 "
            f"-T '{tmp_dir}' --compress-program=gzip")
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, text=True, encoding="utf-8",
                             bufsize=1 << 20)
+
+    def tiles_in_order():
+        current = None
+        elements = []
+        last_line = None
+        for line in proc.stdout:
+            if line == last_line:
+                continue  # the same element twice in one tile
+            last_line = line
+            tab = line.index("\t")
+            tid = int(line[:tab])
+            if tid != current:
+                if current is not None:
+                    yield current, ('{"v":%d,"e":[' % FORMAT_VERSION + ",".join(elements) + "]}").encode("utf-8")
+                current = tid
+                elements = []
+            elements.append(line[tab + 1:-1])
+        if current is not None:
+            yield current, ('{"v":%d,"e":[' % FORMAT_VERSION + ",".join(elements) + "]}").encode("utf-8")
+
     largest = (0, None)
     total_raw = 0
     total_gz = 0
     tiles = 0
-    current = None
-    elements = []
-    last_line = None
 
-    def flush():
+    def write(tid, raw, data):
         nonlocal largest, total_raw, total_gz, tiles
-        if current is None:
-            return
-        raw = ('{"v":%d,"e":[' % FORMAT_VERSION + ",".join(elements) + "]}").encode("utf-8")
-        data = gzip.compress(raw, compresslevel=9, mtime=0)
-        part_writer.add(current, data)
+        part_writer.add(tid, data)
         tiles += 1
         total_raw += len(raw)
         total_gz += len(data)
-        if len(data) > largest[0]:
-            largest = (len(data), current, len(raw), len(elements))
+        if len(data) > largest[0] and tileid_to_zxy(tid)[0] == part_writer.zoom:
+            largest = (len(data), tid, len(raw), raw.count(b'"t":'))
 
-    for line in proc.stdout:
-        if line == last_line:
-            continue  # the same element twice in one tile
-        last_line = line
-        tab = line.index("\t")
-        tid = int(line[:tab])
-        if tid != current:
-            flush()
-            current = tid
-            elements = []
-        elements.append(line[tab + 1:-1])
-    flush()
+    if workers > 1:
+        import multiprocessing
+        with multiprocessing.get_context("fork").Pool(workers) as pool:
+            # imap keeps the order: tiles must be written by tile id.
+            for tid, raw, data in pool.imap(_compress, tiles_in_order(), chunksize=32):
+                write(tid, raw, data)
+    else:
+        for item in tiles_in_order():
+            write(*_compress(item))
     if proc.wait() != 0:
         raise RuntimeError("sort failed")
     stats.counts["tiles"] = tiles
@@ -620,7 +696,8 @@ def main():
             "license": "ODbL-1.0 (https://opendatacommons.org/licenses/odbl/)",
         }
         part_writer = PartWriter(args.out_dir, args.name, args.zoom, args.max_part_bytes, metadata)
-        largest = sort_and_write(os.path.join(tmp_dir, "lines-*.gz"), tmp_dir, part_writer, stats, args.sort_memory)
+        largest = sort_and_write(os.path.join(tmp_dir, "lines-*.gz"), tmp_dir, part_writer, stats, args.sort_memory,
+                                 workers=args.workers)
         parts = part_writer.finish()
         stats.phases["sort_write"] = time.time() - t
     finally:
@@ -670,6 +747,8 @@ def main():
           f"{c.get('ways_a', 0):,} area ways, {c.get('ways_r', 0):,} roads")
     print(f"Relations:        {c.get('relations_wanted', 0):,} wanted, {c.get('relations_big', 0):,} too big, "
           f"{c.get('relation_tile_entries', 0):,} tile entries")
+    print(f"Shared objects:   {c.get('shared_objects', 0):,} ({c.get('ways_shared', 0):,} ways, "
+          f"{c.get('relations_shared', 0):,} relations), stored once instead of in every tile")
     total = sum(stats.bytes_by_kind.values()) or 1
     print("JSON by kind:     " + ", ".join(
         f"{k} {v / total * 100:.0f}%" for k, v in sorted(stats.bytes_by_kind.items(), key=lambda kv: -kv[1])))

@@ -11,6 +11,8 @@
 nwr/building
 nwr/shop
 nwr/amenity=place_of_worship,restaurant,fast_food,cafe,food_court,veterinary,fuel,police,fire_station,townhall,library,school,college,university,recycling,bicycle_parking
+# Since game 1.3.5 (marker letter "q" in the tiles, see build_tiles.py).
+nwr/amenity=pub,nightclub,community_centre
 nwr/tourism=museum
 nwr/man_made=windmill,works,petroleum_well,storage_tank
 nwr/craft=bakery,sawmill,carpenter,tailor,blacksmith,metal_construction,welder

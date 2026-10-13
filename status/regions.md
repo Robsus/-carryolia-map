@@ -1,6 +1,6 @@
 # Map data status
 
-Updated 2026-10-13 08:26 UTC: 103 of 105 regions built. Written by the "Build map data" workflow; every region is rebuilt once a month on its own day.
+Updated 2026-10-13 08:53 UTC: 103 of 105 regions built. Written by the "Build map data" workflow; every region is rebuilt once a month on its own day.
 
 | Region | Release | OSM data of | Archive (MB) | Parts | Monthly day |
 | --- | --- | --- | ---: | ---: | ---: |
@@ -35,7 +35,7 @@ Updated 2026-10-13 08:26 UTC: 103 of 105 regions built. Written by the "Build ma
 | england | england-2026-10-13-r5 | 2026-10-12 | 2,742 | 2 | 12 |
 | estonia | estonia-2026-10-13-r5 | 2026-10-12 | 614 | 1 | 8 |
 | faroe-islands | faroe-islands-2026-10-13-r5 | 2026-10-12 | 14 | 1 | 6 |
-| finland | finland-2026-10-13-r5 | 2026-10-12 | 5,323 | 3 | 24 |
+| finland | finland-2026-10-13-r6 | 2026-10-12 | 2,546 | 2 | 24 |
 | franche-comte | franche-comte-2026-10-13-r5 | 2026-10-12 | 442 | 1 | 3 |
 | georgia | georgia-2026-10-13-r5 | 2026-10-12 | 1,366 | 1 | 15 |
 | greece | greece-2026-10-13-r5 | 2026-10-12 | 1,730 | 1 | 20 |
@@ -88,7 +88,7 @@ Updated 2026-10-13 08:26 UTC: 103 of 105 regions built. Written by the "Build ma
 | provence-alpes-cote-d-azur | provence-alpes-cote-d-azur-2026-10-13-r5 | 2026-10-12 | 746 | 1 | 8 |
 | rheinland-pfalz | rheinland-pfalz-2026-10-13-r5 | 2026-10-12 | 759 | 1 | 8 |
 | rhone-alpes | rhone-alpes-2026-10-13-r5 | 2026-10-12 | 1,334 | 1 | 15 |
-| romania | romania-2026-10-13-r5 | 2026-10-12 | 6,352 | 4 | 12 |
+| romania | romania-2026-10-13-r6 | 2026-10-12 | 1,174 | 1 | 12 |
 | saarland | saarland-2026-10-13-r5 | 2026-10-12 | 103 | 1 | 20 |
 | sachsen | sachsen-2026-10-13-r5 | 2026-10-12 | 567 | 1 | 27 |
 | sachsen-anhalt | sachsen-anhalt-2026-10-13-r5 | 2026-10-12 | 401 | 1 | 5 |

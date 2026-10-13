@@ -34,8 +34,11 @@ EXCLUDE = {
     "russia", "ukraine",
     # Combined extracts that overlap the countries:
     "alps", "britain-and-ireland", "dach",
-    # France's overseas departments (not in Europe):
-    "guadeloupe", "guyane", "martinique", "mayotte", "reunion",
+    # Great Britain is also listed as part of "united-kingdom" (England,
+    # Scotland, Wales); Northern Ireland comes with "ireland-and-northern-ireland".
+    "great-britain",
+    # Overseas territories (not in Europe):
+    "guadeloupe", "guyane", "martinique", "mayotte", "reunion", "bermuda", "falklands",
 }
 
 

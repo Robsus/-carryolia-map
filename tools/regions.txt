@@ -1,3 +1,0 @@
-# Geofabrik regions built when the workflow runs without a region list
-# (and, later, every month). One per line.
-europe/netherlands

@@ -1,8 +1,13 @@
-# Builds Carryolia's map data from Geofabrik extracts and publishes it as a
-# GitHub release. Each region runs as its own job on its own machine.
+# Builds Carryolia's map data from Geofabrik extracts. Every region (a
+# country, or a part of a big country) is built on its own machine and
+# published as its own release "<region>-YYYY-MM-DD-r<run>". Afterwards
+# map-data.json (in the release "map-data") is rewritten to point at the
+# newest release of every region.
 #
-# Start by hand: Actions › Build map data › Run workflow.
-# The monthly schedule is switched on once all of Europe has been tested.
+# Every day at 02:17 UTC the regions whose monthly day it is are rebuilt
+# (see tools/plan_regions.py), so a country's update never touches the others.
+# By hand: Actions › Build map data › Run workflow, with "all", a list of
+# region ids, or "plan" (only shows the plan).
 
 name: Build map data
 
@@ -10,17 +15,13 @@ on:
   workflow_dispatch:
     inputs:
       regions:
-        description: "Geofabrik regions, space-separated (e.g. europe/netherlands europe/belgium). Empty = tools/regions.txt"
-        default: "europe/netherlands"
+        description: "today | all | plan | Geofabrik region ids (space-separated)"
+        default: "plan"
       zoom:
         description: "Tile zoom level"
         default: "15"
-      latest:
-        description: "Make this the release the game uses (latest)"
-        type: boolean
-        default: true
-  # schedule:
-  #   - cron: "17 3 2 * *"   # 03:17 UTC on the 2nd of every month
+  schedule:
+    - cron: "17 2 * * *"
 
 permissions:
   contents: write
@@ -30,43 +31,67 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: build-map-data
+  cancel-in-progress: false
+
+env:
+  # The log's key lines also go out as annotations: readable through the API without the log files.
+  ANNOTATE: |
+    annotate() {
+      msg=$(tail -c 3500 "$3" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"}{print}')
+      echo "::$1 title=$2::$msg"
+    }
+
 jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
-      regions: ${{ steps.list.outputs.regions }}
-      tag: ${{ steps.list.outputs.tag }}
+      regions: ${{ steps.plan.outputs.regions }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
       - uses: actions/checkout@v4
-      - id: list
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: plan
         env:
-          INPUT_REGIONS: ${{ github.event.inputs.regions }}
+          SELECT: ${{ github.event.inputs.regions || 'today' }}
         run: |
-          if [ -n "$INPUT_REGIONS" ]; then
-            regions="$INPUT_REGIONS"
-          else
-            regions=$(grep -v '^#' tools/regions.txt | xargs)
-          fi
-          echo "regions=$(printf '%s\n' $regions | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
-          echo "tag=data-$(date -u +%Y-%m-%d)-r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          eval "$ANNOTATE"
+          python tools/plan_regions.py --select "$SELECT" --github-output "$GITHUB_OUTPUT" | tee plan.txt
+          split -l 45 plan.txt planpart-
+          for f in planpart-*; do annotate notice "Plan ($f)" "$f"; done
 
   build:
     needs: plan
+    if: needs.plan.outputs.count != '0'
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 20
       matrix:
         region: ${{ fromJson(needs.plan.outputs.regions) }}
+    env:
+      REGION: ${{ matrix.region.id }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Make room on the disk
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift /usr/local/julia* \
+            /opt/microsoft /opt/google /usr/lib/jvm /usr/local/share/powershell /usr/local/share/chromium || true
           sudo docker image prune --all --force >/dev/null 2>&1 || true
-          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          # Work where there is most room.
+          root_free=$(df --output=avail -B1 / | tail -1)
+          mnt_free=$(df --output=avail -B1 /mnt | tail -1)
+          if [ "$mnt_free" -gt "$root_free" ]; then work=/mnt/work; else work="$HOME/work"; fi
+          sudo mkdir -p "$work" && sudo chown "$USER" "$work"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+          echo "TMPDIR=$work/tmp" >> "$GITHUB_ENV"
+          mkdir -p "$work/tmp"
           df -h / /mnt
 
       - uses: actions/setup-python@v5
@@ -79,97 +104,82 @@ jobs:
           sudo apt-get install -y -q osmium-tool
           pip install -q osmium pmtiles orjson
 
-      - name: Name
-        id: name
-        run: echo "name=$(basename '${{ matrix.region }}')" >> "$GITHUB_OUTPUT"
-
-      - name: Download ${{ matrix.region }}
-        working-directory: /mnt/work
+      - name: Download ${{ matrix.region.id }} (${{ matrix.region.mb }} MB)
         run: |
-          wget -nv -U "carryolia-map-builder (github.com/${GITHUB_REPOSITORY})" \
-            "https://download.geofabrik.de/${{ matrix.region }}-latest.osm.pbf" -O raw.osm.pbf
-          wget -nv -U "carryolia-map-builder (github.com/${GITHUB_REPOSITORY})" \
-            "https://download.geofabrik.de/${{ matrix.region }}.poly" -O "${{ steps.name.outputs.name }}.poly"
-          ls -l
+          cd "$WORK"
+          for i in 1 2 3; do
+            wget -nv -U "carryolia-map-builder (github.com/${GITHUB_REPOSITORY})" "${{ matrix.region.pbf }}" -O raw.osm.pbf && break
+            sleep 60
+          done
+          wget -nv -U "carryolia-map-builder (github.com/${GITHUB_REPOSITORY})" "${{ matrix.region.poly }}" -O "$REGION.poly"
 
       - name: Filter
-        working-directory: /mnt/work
         run: |
-          /usr/bin/time -v osmium tags-filter raw.osm.pbf --expressions="$GITHUB_WORKSPACE/tools/filters.txt" \
-            -o filtered.osm.pbf --no-progress 2> filter-time.txt || (cat filter-time.txt; exit 1)
-          grep -E "Elapsed|Maximum resident" filter-time.txt
+          cd "$WORK"
+          osmium tags-filter raw.osm.pbf --expressions="$GITHUB_WORKSPACE/tools/filters.txt" -o filtered.osm.pbf --no-progress
           rm raw.osm.pbf
-          ls -l
 
       - name: Build tiles
-        working-directory: /mnt/work
         run: |
-          # The log's key lines also go out as annotations: readable through the API without the log files.
-          annotate() {
-            msg=$(tail -c 3500 "$3" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"}{print}')
-            echo "::$1 title=$2::$msg"
-          }
+          eval "$ANNOTATE"
+          cd "$WORK"
           if ! /usr/bin/time -v python "$GITHUB_WORKSPACE/tools/build_tiles.py" filtered.osm.pbf \
-              --name "${{ steps.name.outputs.name }}" --zoom "${{ github.event.inputs.zoom || '15' }}" \
-              --out-dir out --tmp-dir /mnt/work/tmp 2> build-time.txt | tee build-log.txt; then
+              --name "$REGION" --zoom "${{ github.event.inputs.zoom || '15' }}" \
+              --out-dir out --tmp-dir "$WORK/tmp" 2> build-time.txt | tee build-log.txt; then
             cat build-time.txt >> build-log.txt
             df -h / /mnt >> build-log.txt
-            annotate error "Build failed: ${{ matrix.region }}" build-log.txt
+            annotate error "Build failed: $REGION" build-log.txt
             exit 1
           fi
           grep -E "Elapsed|Maximum resident" build-time.txt | tee -a build-log.txt
-          sed -n '/=== Carryolia/,$p' build-log.txt > build-summary.txt
-          annotate notice "Built: ${{ matrix.region }}" build-summary.txt
-          mv "${{ steps.name.outputs.name }}.poly" out/
+          df -h "$WORK" | tail -1 | tee -a build-log.txt
+          mv "$REGION.poly" out/
           rm filtered.osm.pbf
-          {
-            echo '### ${{ matrix.region }}'
-            echo '```'
-            sed -n '/=== Carryolia/,$p' build-log.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          df -h /mnt
+          sed -n '/=== Carryolia/,$p' build-log.txt > build-summary.txt
+          annotate notice "Built: $REGION" build-summary.txt
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: region-${{ steps.name.outputs.name }}
-          path: |
-            /mnt/work/out/*.pmtiles
-            /mnt/work/out/*.summary.json
-            /mnt/work/out/*.poly
-          compression-level: 0
-          retention-days: 3
+      - name: Publish ${{ matrix.region.id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$REGION-$(date -u +%F)-r${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" "$WORK"/out/*.pmtiles "$WORK/out/$REGION.summary.json" "$WORK/out/$REGION.poly" \
+            --latest=false --title "Map data: ${{ matrix.region.id }} ($(date -u +%F))" \
+            --notes "Carryolia map data for ${{ matrix.region.id }}, built from Geofabrik's extract. Map data © OpenStreetMap contributors, available under the Open Database License (ODbL 1.0)."
+          echo "Published $tag"
 
-  publish:
+  manifest:
     needs: [plan, build]
+    if: always() && needs.plan.outputs.count != '0'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          path: dist
-          merge-multiple: true
-      - name: Manifest
-        run: |
-          python tools/make_manifest.py dist --tag "${{ needs.plan.outputs.tag }}" \
-            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ needs.plan.outputs.tag }}/" \
-            -o dist/map-data.json
-          ls -l dist
-      - name: Release
+          python-version: "3.12"
+      - name: Collect the newest release of every region
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.plan.outputs.tag }}
         run: |
-          latest_flag="--latest"
-          if [ "${{ github.event.inputs.latest }}" = "false" ]; then latest_flag="--latest=false"; fi
-          gh release create "$TAG" dist/*.pmtiles dist/*.summary.json dist/map-data.json \
-            --title "Map data $TAG" $latest_flag \
-            --notes "Carryolia map data built from Geofabrik extracts. Map data © OpenStreetMap contributors, available under the Open Database License (ODbL 1.0)."
-      - name: Check partial downloads
+          python tools/plan_regions.py --select plan --out regions.json > /dev/null
+          python tools/collect_releases.py --repo "$GITHUB_REPOSITORY" --regions regions.json --dist dist --keep 2 --prune
+      - name: Write and publish map-data.json
         env:
-          TAG: ${{ needs.plan.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          first=$(ls dist/*.pmtiles | head -1 | xargs basename)
-          magic=$(curl -sL -r 0-6 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${first}")
-          echo "First bytes of ${first}: ${magic}"
-          [ "$magic" = "PMTiles" ]
+          eval "$ANNOTATE"
+          python tools/make_manifest.py dist --repo "$GITHUB_REPOSITORY" -o map-data.json | tee manifest-log.txt
+          gh release view map-data >/dev/null 2>&1 || gh release create map-data --latest=false \
+            --title "Map data index (map-data.json)" \
+            --notes "map-data.json lists the newest release of every region. It is rewritten after every build."
+          gh release upload map-data map-data.json --clobber
+          head -c 3000 status/regions.md > status-head.txt
+          annotate notice "Manifest" manifest-log.txt
+          annotate notice "Status" status-head.txt
+      - name: Record the status (also keeps the monthly schedule alive)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add status/regions.md
+          git diff --cached --quiet || git commit -m "Map data status after run ${GITHUB_RUN_NUMBER}"
+          git pull --rebase -q origin main && git push origin HEAD:main

@@ -5,25 +5,32 @@ instead of asking the public Overpass servers for every spot a player visits.
 
 ## What is here
 
+- `tools/plan_regions.py`: which Geofabrik extracts are built: every European country
+  plus Turkey, without Russia and Ukraine; big countries are split into Geofabrik's
+  smaller regions. Every region gets its own day of the month for its rebuild.
 - `tools/filters.txt`: what to keep from an OpenStreetMap extract (the same
   objects the game asks Overpass for: buildings and places, resource areas, roads).
 - `tools/build_tiles.py`: turns a filtered extract into PMTiles archives; each
   tile (zoom 15, about 750 m wide in the Netherlands) holds gzip-compressed JSON.
   The format is described at the top of the file.
-- `tools/make_manifest.py`: writes `map-data.json`, which lists every region,
-  its outline and its archive parts.
-- `tools/regions.txt`: the regions built by default.
+- `tools/collect_releases.py` and `tools/make_manifest.py`: find the newest release
+  of every region and write `map-data.json` from them.
+- `tools/compare.py`: compares an archive with Overpass.
 - `tools/tests/test_build.py`: a self-test on a made-up map; it compares what the
   archive delivers with a brute-force search over the original objects.
-- `.github/workflows/build-map-data.yml`: builds each region on its own GitHub
-  machine and publishes the result as a release.
+- `.github/workflows/build-map-data.yml`: runs every day and rebuilds the regions
+  whose day it is, each on its own GitHub machine, each published as its own release.
+- `status/regions.md`: what is published now, per region.
 
 ## The data
 
-Every release holds the archive parts (`<region>-NN.pmtiles`, each under 2 GiB),
-a summary per region and `map-data.json`. The game starts from
+Every region has its own releases, `<region>-YYYY-MM-DD-r<run>`, holding its archive
+parts (`<region>-NN.pmtiles`, each under 2 GiB), a summary and its outline. The two
+newest per region are kept. The game starts from
 
-    https://github.com/Robsus/carryolia-map/releases/latest/download/map-data.json
+    https://github.com/Robsus/carryolia-map/releases/download/map-data/map-data.json
+
+which lists the newest release of every region.
 
 ## Building it yourself
 

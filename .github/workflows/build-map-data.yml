@@ -6,8 +6,12 @@
 #
 # Every day at 02:17 UTC the regions whose monthly day it is are rebuilt
 # (see tools/plan_regions.py), so a country's update never touches the others.
+# PAUSED since 14 Oct 2026: the schedule below is commented out, so nothing
+# is rebuilt automatically. See "schedule:" below for how to turn it back on.
 # By hand: Actions › Build map data › Run workflow, with "all", a list of
-# region ids, or "plan" (only shows the plan).
+# region ids, or "plan" (only shows the plan). This keeps working while the
+# schedule is paused. After a change to tools/filters.txt or build_tiles.py
+# (e.g. new building types), run it with "all".
 
 name: Build map data
 
@@ -20,8 +24,13 @@ on:
       zoom:
         description: "Tile zoom level"
         default: "15"
-  schedule:
-    - cron: "17 2 * * *"
+  # Monthly rebuild per region, PAUSED (14 Oct 2026). To turn it back on,
+  # remove the "# " in front of the next two lines (keep the indentation:
+  # "schedule:" lines up with "workflow_dispatch:") and commit. The next
+  # day's run then rebuilds the regions due that day; regions whose day
+  # passed meanwhile wait for their day next month (or run "all" once).
+  # schedule:
+  #   - cron: "17 2 * * *"
 
 permissions:
   contents: write

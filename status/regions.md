@@ -1,13 +1,13 @@
 # Map data status
 
-Updated 2026-10-13 15:59 UTC: 105 of 105 regions built. Written by the "Build map data" workflow; every region is rebuilt once a month on its own day.
+Updated 2026-10-14 07:52 UTC: 105 of 105 regions built. Written by the "Build map data" workflow; every region is rebuilt once a month on its own day.
 
 | Region | Release | OSM data of | Archive (MB) | Parts | Monthly day |
 | --- | --- | --- | ---: | ---: | ---: |
 | albania | albania-2026-10-13-r9 | 2026-10-12 | 176 | 1 | 12 |
 | alsace | alsace-2026-10-13-r9 | 2026-10-12 | 203 | 1 | 23 |
-| andorra | andorra-2026-10-13-r9 | 2026-10-12 | 7 | 1 | 14 |
-| aquitaine | aquitaine-2026-10-13-r9 | 2026-10-12 | 554 | 1 | 14 |
+| andorra | andorra-2026-10-14-r10 | 2026-10-13 | 7 | 1 | 14 |
+| aquitaine | aquitaine-2026-10-14-r10 | 2026-10-13 | 554 | 1 | 14 |
 | austria | austria-2026-10-13-r9 | 2026-10-12 | 1,425 | 1 | 20 |
 | auvergne | auvergne-2026-10-13-r9 | 2026-10-12 | 322 | 1 | 26 |
 | azores | azores-2026-10-13-r9 | 2026-10-12 | 33 | 1 | 26 |
@@ -101,7 +101,7 @@ Updated 2026-10-13 15:59 UTC: 105 of 105 regions built. Written by the "Build ma
 | spain | spain-2026-10-13-r9 | 2026-10-12 | 3,545 | 2 | 25 |
 | sud | sud-2026-10-13-r9 | 2026-10-12 | 876 | 1 | 26 |
 | sweden | sweden-2026-10-13-r9 | 2026-10-12 | 2,823 | 2 | 8 |
-| swietokrzyskie | swietokrzyskie-2026-10-13-r9 | 2026-10-12 | 167 | 1 | 14 |
+| swietokrzyskie | swietokrzyskie-2026-10-14-r10 | 2026-10-13 | 167 | 1 | 14 |
 | switzerland | switzerland-2026-10-13-r9 | 2026-10-12 | 829 | 1 | 22 |
 | thueringen | thueringen-2026-10-13-r9 | 2026-10-12 | 278 | 1 | 1 |
 | turkey | turkey-2026-10-13-r9 | 2026-10-12 | 2,036 | 2 | 12 |

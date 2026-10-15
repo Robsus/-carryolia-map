@@ -12,6 +12,8 @@
 # region ids, or "plan" (only shows the plan). This keeps working while the
 # schedule is paused. After a change to tools/filters.txt or build_tiles.py
 # (e.g. new building types), run it with "all".
+# Since game 1.4.17 every archive also holds the Seek index (build_tiles.py,
+# SEEK INDEX); map-data.json marks such regions with "seek_index".
 
 name: Build map data
 

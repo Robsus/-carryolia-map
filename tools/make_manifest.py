@@ -92,6 +92,10 @@ def region_entry(folder, name, repo, tolerance):
             for p in s["parts"]
         ],
     }
+    # Since game 1.4.17: the region's archive holds the Seek index (see build_tiles.py, SEEK INDEX).
+    if s.get("seek_index"):
+        region["seek_index"] = s["seek_index"]
+        region["seek_index_zoom"] = s.get("seek_index_zoom", 12)
     poly_path = os.path.join(folder, f"{name}.poly")
     if os.path.exists(poly_path):
         rings = read_poly(poly_path)

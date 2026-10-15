@@ -8,7 +8,9 @@ Self-test for build_tiles.py on a made-up map (no download needed).
    diagonal), a forest relation spanning many tiles, a water relation, a forest
    relation too big for the game, and objects the game never asks for.
 2. Filters it with osmium tags-filter and builds the archive.
-3. For hundreds of random circles, compares what the archive delivers (the
+3. Since game 1.4.17: for random 5 km circles and every kind of the Seek
+   index, compares what the index delivers with a brute-force search.
+4. For hundreds of random circles, compares what the archive delivers (the
    tiles overlapping the circle, then the same "around" distance test) with a
    brute-force search over the original objects. Does the same for road
    bounding boxes. Any difference fails the test.
@@ -263,6 +265,7 @@ def obj_dist(lat, lon, flat, lines):
 # ---------------------------------------------------------------- archive side
 
 OBJECTS = {}
+SEEK = {}  # (code, x12, y12) -> index entries
 
 
 def load_archive(out_dir, name):
@@ -277,6 +280,9 @@ def load_archive(out_dir, name):
                     assert doc["v"] == 1
                     if z == ZOOM:
                         tiles.setdefault((x, y), []).extend(doc["e"])
+                    elif z == bt.SEEK_ADDRESS_ZOOM:
+                        n12 = 1 << bt.SEEK_INDEX_ZOOM
+                        SEEK.setdefault((x // n12, x % n12, y), []).extend(doc["e"])
                     else:
                         for el in doc["e"]:
                             assert bt.object_address(el["t"], el["id"]) == (z, x, y), "shared object at the wrong address"
@@ -428,7 +434,63 @@ def main():
             print(f"road box {i}: missing {sorted(want - got)[:5]} extra {sorted(got - want)[:5]}")
     print(f"road boxes: 400 checked, {road_failures} with differences")
 
-    if failures or road_failures:
+    # Seek index (game 1.4.17): per kind, the objects whose centre lies within the circle.
+    with open(os.path.join(out, "synthetic.summary.json")) as f:
+        summary = json.load(f)
+    assert summary.get("seek_index") == bt.SEEK_INDEX_VERSION, "summary without seek_index"
+    centres = {}
+    for k, (kind, flat, lines) in expected.items():
+        if not ("p" in kind or "q" in kind or "a" in kind):
+            continue
+        if k[0] == "n":
+            centres[k] = flat[:2]
+        else:
+            pts = flat if lines is None else [v for l in lines for v in l]
+            centres[k] = bt.centre_of(bt.bounds_of(pts))
+    tags_of = {("n", i): t for i, (_, _, t) in m.nodes.items()}
+    tags_of.update({("w", i): t for i, (_, t) in m.ways.items()})
+    tags_of.update({("r", i): t for i, (_, t) in m.rels.items()})
+    kinds_seen = set()
+    for entries in SEEK.values():
+        for e in entries:
+            assert ("tags" in e) != ("m" in e), f"index entry {e['t']}{e['id']}: tags xor marker"
+    seek_failures = 0
+    seek_checked = 0
+    n12 = 1 << bt.SEEK_INDEX_ZOOM
+    for i in range(60):
+        lat, lon = offset(LAT0, LON0, random.uniform(-6000, 6000), random.uniform(-6000, 6000))
+        radius = 5000
+        s_, w_ = offset(lat, lon, -radius, -radius)
+        n_, e_ = offset(lat, lon, radius, radius)
+        squares = tiles_for_box(s_, w_, n_, e_, bt.SEEK_INDEX_ZOOM)
+        for name in bt.SEEK_TYPES:
+            code = bt.SEEK_CODE[name]
+            want = {}
+            for k, c in centres.items():
+                blocks = [b for kind, b in bt.seek_matches(tags_of[k], k[0]) if kind == name]
+                if blocks and line_dist(lat, lon, c) <= radius:
+                    want[k] = blocks[0]
+            got = {}
+            for (x, y) in squares:
+                for e in SEEK.get((code, x, y), []):
+                    if line_dist(lat, lon, e["c"]) <= radius:
+                        got[(e["t"], e["id"])] = "a" if e.get("m") else "p"
+            # Right on the edge rounding may differ; anything else is a bug.
+            diff = {k for k in set(want) ^ set(got)
+                    if abs(line_dist(lat, lon, centres[k]) - radius) > 0.01}
+            wrong_block = {k for k in set(want) & set(got) if want[k] != got[k]}
+            if diff or wrong_block:
+                seek_failures += 1
+                print(f"seek circle {i} {name}: differences {sorted(diff)[:5]} wrong block {sorted(wrong_block)[:5]}")
+            if want:
+                kinds_seen.add(name)
+            seek_checked += len(want)
+    print(f"seek index: 60 circles x {len(bt.SEEK_TYPES)} kinds, {seek_checked:,} finds expected, "
+          f"{len(kinds_seen)} kinds present, {seek_failures} with differences")
+    assert {"SHOP", "FOREST", "WATER", "PUB", "OIL_TANK", "BICYCLE_PARKING", "SCRAPYARD", "GREENHOUSE",
+            "FIELD", "PASTURE"} <= kinds_seen, f"kinds in the test map: {sorted(kinds_seen)}"
+
+    if failures or road_failures or seek_failures:
         sys.exit(1)
     print("ALL OK")
 

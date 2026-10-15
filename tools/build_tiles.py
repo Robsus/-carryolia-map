@@ -46,6 +46,25 @@ the Overpass answer it used to get (see the app's MapDataArchive):
 An object goes into every tile that a piece of its outline passes through,
 which is what Overpass's "around" and bounding-box filters look at.
 
+SEEK INDEX (since game 1.4.17). A Traveller's "Seek resources" looks for one
+kind of object within 5 km. Reading every tile of such a circle would cost
+megabytes, so the archive also holds a small index: per kind of object (the
+game's SeekConfig.FILTERS, mirrored in SEEK_TYPES below) and per square at
+zoom SEEK_INDEX_ZOOM (12, about 6 km), one tile with the objects of that kind
+whose centre lies in the square. It lives at zoom SEEK_ADDRESS_ZOOM (20),
+x = code * 2^SEEK_INDEX_ZOOM + x12, y = y12 (code = position in SEEK_TYPES,
+from 1), in the same {"v": 1, "e": [...]} layout as a tile:
+
+  points (the Overpass points block of that kind, "out tags center"):
+          {"t", "id", "c", "tags"}           -> a building, like discovery
+  areas  (the areas block, "out tags geom"):
+          {"t", "id", "c", "m": 1}           -> a marker only (no outline;
+                                                the outline comes with the
+                                                normal tiles when needed)
+
+The summary (and so map-data.json) says "seek_index": SEEK_INDEX_VERSION;
+a region without it is searched through Overpass, as before.
+
 Usage:
   python build_tiles.py <filtered.osm.pbf> --name netherlands --out-dir out
 
@@ -187,6 +206,173 @@ def is_road(tags, osm_type):
     return osm_type == "w" and tags.get("highway") in HIGHWAYS
 
 
+# --- Seek index (see SEEK INDEX above; the game's SeekConfig.FILTERS) ---
+SEEK_INDEX_VERSION = 1
+SEEK_INDEX_ZOOM = 12
+SEEK_ADDRESS_ZOOM = 20
+
+# Codes are positions in this list (from 1). Only ever append: the game has
+# the same list (SeekConfig.SEEK_INDEX_TYPES).
+SEEK_TYPES = [
+    "FIELD", "VINEYARD", "ORCHARD", "FOREST", "WATER", "PASTURE", "QUARRY", "GREENHOUSE", "FLOWERBED",
+    "ALLOTMENT", "FARMYARD", "HEATH", "BOG", "BICYCLE_PARKING", "SCRAPYARD", "CHURCH", "SHOP", "SUPERMARKET",
+    "MINE", "MUSEUM", "FUEL_STATION", "OIL_TANK", "OIL_WELL", "WINDMILL", "BAKERY", "SAWMILL", "TAILOR",
+    "SMELTER", "FLORIST", "BICYCLE_SHOP", "RESTAURANT", "BUTCHER", "DEPARTMENT_STORE", "GARAGE", "CARPENTER",
+    "SPINNING_MILL", "PUB", "NIGHTCLUB", "OIL_REFINERY", "VETERINARY", "POLICE_STATION", "FIRE_STATION",
+    "TOWN_HALL", "LIBRARY", "COMMUNITY_CENTRE", "SCHOOL", "INDUSTRIAL",
+]
+SEEK_CODE = {name: i + 1 for i, name in enumerate(SEEK_TYPES)}
+
+
+def seek_matches(tags, osm_type):
+    """The kinds of SeekConfig.FILTERS this object matches, each with its block:
+    [(kind, "p" | "a")]. "p": the points block (nwr[...], relation[natural=water]),
+    "a": the areas block (way[...], relation[type=multipolygon][...])."""
+    out = []
+    g = tags.get
+    landuse, natural, leisure = g("landuse"), g("natural"), g("leisure")
+    amenity, shop, building = g("amenity"), g("shop"), g("building")
+    man_made, craft, industrial = g("man_made"), g("craft"), g("industrial")
+
+    if osm_type == "w":
+        if landuse in ("farmland", "greenhouse_horticulture", "plant_nursery"):
+            out.append(("FIELD", "a"))
+        if landuse == "vineyard":
+            out.append(("VINEYARD", "a"))
+        if landuse == "orchard":
+            out.append(("ORCHARD", "a"))
+        if landuse == "forest" or natural in ("wood", "tree_row") or leisure == "park":
+            out.append(("FOREST", "a"))
+        if natural == "water":
+            out.append(("WATER", "a"))
+        if landuse == "meadow":
+            out.append(("PASTURE", "a"))
+        if landuse == "quarry":
+            out.append(("QUARRY", "a"))
+        if building == "greenhouse":
+            out.append(("GREENHOUSE", "a"))
+        if landuse == "flowerbed" or leisure == "garden":
+            out.append(("FLOWERBED", "a"))
+        if landuse == "allotments":
+            out.append(("ALLOTMENT", "a"))
+        if landuse == "farmyard":
+            out.append(("FARMYARD", "a"))
+        if natural == "heath" or landuse == "heath":
+            out.append(("HEATH", "a"))
+        if natural == "wetland":
+            out.append(("BOG", "a"))
+    if osm_type == "r":
+        if g("type") == "multipolygon" and (landuse == "forest" or natural == "wood" or leisure == "park"):
+            out.append(("FOREST", "a"))
+        if natural == "water":
+            out.append(("WATER", "p"))
+
+    def point(kind):
+        out.append((kind, "p"))
+
+    if amenity == "bicycle_parking" and (
+        overpass_number(g("capacity", "")) >= BICYCLE_PARKING_MIN_CAPACITY or g("bicycle_parking") in BICYCLE_PARKING_KINDS
+    ):
+        point("BICYCLE_PARKING")
+    if industrial == "scrap_yard" or (amenity == "recycling" and g("recycling_type") == "centre"):
+        point("SCRAPYARD")
+    if (amenity == "place_of_worship" and g("religion") == "christian") or building in ("church", "chapel", "cathedral"):
+        point("CHURCH")
+    if shop is not None or building in ("retail", "commercial"):
+        point("SHOP")
+    if shop in ("supermarket", "convenience", "greengrocer") or building == "supermarket" or \
+            amenity in ("fast_food", "cafe", "food_court"):
+        point("SUPERMARKET")
+    if industrial == "mine":
+        point("MINE")
+    if g("tourism") == "museum":
+        point("MUSEUM")
+    if amenity == "fuel":
+        point("FUEL_STATION")
+    if man_made == "storage_tank" and g("content") in TANK_CONTENTS:
+        point("OIL_TANK")
+    if man_made == "petroleum_well":
+        point("OIL_WELL")
+    if man_made == "windmill" or building == "windmill":
+        point("WINDMILL")
+    if shop == "bakery" or craft == "bakery":
+        point("BAKERY")
+    if craft in ("sawmill", "carpenter") or shop in ("hardware", "doityourself"):
+        point("SAWMILL")
+    if shop in ("clothes", "tailor") or craft == "tailor":
+        point("TAILOR")
+    if craft in ("blacksmith", "metal_construction", "welder") or man_made == "works":
+        point("SMELTER")
+    if shop == "florist":
+        point("FLORIST")
+    if shop == "bicycle":
+        point("BICYCLE_SHOP")
+    if amenity == "restaurant":
+        point("RESTAURANT")
+    if shop == "butcher":
+        point("BUTCHER")
+    if shop in ("houseware", "department_store", "variety_store"):
+        point("DEPARTMENT_STORE")
+    if shop in ("car_repair", "car"):
+        point("GARAGE")
+    if shop == "furniture":
+        point("CARPENTER")
+    if shop in ("fabric", "wool", "sewing"):
+        point("SPINNING_MILL")
+    if amenity == "pub":
+        point("PUB")
+    if amenity == "nightclub":
+        point("NIGHTCLUB")
+    if industrial in ("refinery", "oil", "petroleum"):
+        point("OIL_REFINERY")
+    if amenity == "veterinary":
+        point("VETERINARY")
+    if amenity == "police":
+        point("POLICE_STATION")
+    if amenity == "fire_station" or building == "fire_station":
+        point("FIRE_STATION")
+    if amenity == "townhall":
+        point("TOWN_HALL")
+    if amenity == "library":
+        point("LIBRARY")
+    if amenity == "community_centre":
+        point("COMMUNITY_CENTRE")
+    if amenity in ("school", "college", "university"):
+        point("SCHOOL")
+    if building == "industrial":
+        point("INDUSTRIAL")
+    return out
+
+
+def seek_address(code, lat, lon):
+    """(z, x, y) of the index tile of kind [code] for an object centred at (lat, lon)."""
+    n = 1 << SEEK_INDEX_ZOOM
+    x, y = tile_xy(lat, lon, n)
+    return SEEK_ADDRESS_ZOOM, code * n + clamp(int(x), n), clamp(int(y), n)
+
+
+def seek_entries(element):
+    """The index entries of a tile element (needs "t", "id", "k", "tags", "c"):
+    [((z, x, y), entry)], one per kind of SeekConfig.FILTERS it matches. Only
+    objects the discovery itself returns (letters p, q, a) are indexed."""
+    kinds = element.get("k", "")
+    if not ("p" in kinds or "q" in kinds or "a" in kinds) or "c" not in element:
+        return []
+    lat, lon = element["c"]
+    result = []
+    seen = set()
+    for name, block in seek_matches(element.get("tags", {}), element["t"]):
+        if name in seen:
+            continue
+        seen.add(name)
+        if block == "p":
+            entry = {"t": element["t"], "id": element["id"], "c": element["c"], "tags": element["tags"]}
+        else:
+            entry = {"t": element["t"], "id": element["id"], "c": element["c"], "m": 1}
+        result.append((seek_address(SEEK_CODE[name], lat, lon), entry))
+    return result
+
+
 # --- Tile maths (web mercator, as PMTiles / slippy maps) ---
 MAX_LAT = 85.0511287798
 
@@ -325,6 +511,14 @@ class LineSink:
         self.stats.count("shared_objects")
         self.stats.bytes_by_kind["shared"] = self.stats.bytes_by_kind.get("shared", 0) + len(element_json)
 
+    def add_seek(self, element):
+        """The element's Seek index entries (see SEEK INDEX)."""
+        for (z, x, y), entry in seek_entries(element):
+            text = dumps(entry)
+            self.f.write(f"{zxy_to_tileid(z, x, y):020d}\t{text}\n")
+            self.stats.count("seek_entries")
+            self.stats.bytes_by_kind["seek"] = self.stats.bytes_by_kind.get("seek", 0) + len(text)
+
     def add_stub(self, element, pieces, kind):
         """The tile entries of a shared object: per tile, its outline pieces there."""
         for t, runs in pieces.items():
@@ -402,6 +596,7 @@ def nodes_and_ways_worker(path, zoom, needed_ways, workers, index, lines_path):
             stats.extent([lat, lon, lat, lon])
             stats.count("nodes_" + kind)
             sink.add([(clamp(int(tx), n), clamp(int(ty), n))], dumps(element), kind)
+            sink.add_seek(element)
             continue
 
         # A way.
@@ -432,6 +627,7 @@ def nodes_and_ways_worker(path, zoom, needed_ways, workers, index, lines_path):
             element["n"] = node_ids
         for letter in kind:
             stats.count("ways_" + letter)
+        sink.add_seek(element)
         tiles = object_tiles(flat, n)
         if kind == "a" and len(flat) // 2 >= SHARE_MIN_POINTS and len(tiles) >= SHARE_MIN_TILES:
             # Stored once; the tiles get a stub with their outline pieces.
@@ -495,6 +691,7 @@ def write_relations(wanted, member_geometry, zoom, sink, stats):
         points = sum(len(g) // 2 for _, _, g in geoms)
         big = "a" in kind and points > MAX_FOREST_RELATION_POINTS
         element = {"t": "r", "id": rel_id, "k": kind, "tags": tags, "c": centre_of(b), "b": b}
+        sink.add_seek(element)
 
         # Which tiles each member passes through, and the pieces inside each tile.
         tiles_all, pieces = line_pieces([g for _, _, g in geoms], n)
@@ -741,6 +938,9 @@ def main():
         "archive_bytes": sum(p["bytes"] for p in parts),
         "average_tile_gzip_bytes": round(c.get("tile_bytes_gzip", 0) / tiles) if tiles else 0,
         "largest_tile": None,
+        # Since game 1.4.17: the archive holds the Seek index (see SEEK INDEX).
+        "seek_index": SEEK_INDEX_VERSION,
+        "seek_index_zoom": SEEK_INDEX_ZOOM,
     }
     if largest[1] is not None:
         z, x, y = tileid_to_zxy(largest[1])
@@ -768,6 +968,7 @@ def main():
           f"{c.get('ways_a', 0):,} area ways, {c.get('ways_r', 0):,} roads")
     print(f"Relations:        {c.get('relations_wanted', 0):,} wanted, {c.get('relations_big', 0):,} too big, "
           f"{c.get('relation_tile_entries', 0):,} tile entries")
+    print(f"Seek index:       {c.get('seek_entries', 0):,} entries (zoom {SEEK_INDEX_ZOOM} squares)")
     print(f"Shared objects:   {c.get('shared_objects', 0):,} ({c.get('ways_shared', 0):,} ways, "
           f"{c.get('relations_shared', 0):,} relations), stored once instead of in every tile")
     total = sum(stats.bytes_by_kind.values()) or 1

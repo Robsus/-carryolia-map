@@ -18,8 +18,11 @@ instead of asking the public Overpass servers for every spot a player visits.
 - `tools/compare.py`: compares an archive with Overpass.
 - `tools/tests/test_build.py`: a self-test on a made-up map; it compares what the
   archive delivers with a brute-force search over the original objects.
-- `.github/workflows/build-map-data.yml`: runs every day and rebuilds the regions
-  whose day it is, each on its own GitHub machine, each published as its own release.
+- `.github/workflows/build-map-data.yml`: rebuilds the regions (run by hand; the daily
+  schedule that rebuilds each region on its own day is paused), each on its own GitHub
+  machine, each published as its own release.
+- `docs/`: the game's web pages (GitHub Pages): the
+  [privacy policy](https://robsus.github.io/carryolia-map/privacy-policy.html).
 - `status/regions.md`: what is published now, per region.
 
 ## The data
